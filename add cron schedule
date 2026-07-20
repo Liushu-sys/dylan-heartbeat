@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/heartbeat",
+      "schedule": "0 */4 2-15 * * *"
+    },
+    {
+      "path": "/api/goodnight",
+      "schedule": "0 15 * * *"
+    },
+    {
+      "path": "/api/diary",
+      "schedule": "0 2 * * 0"
+    }
+  ]
+}
