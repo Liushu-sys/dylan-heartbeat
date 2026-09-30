@@ -450,6 +450,14 @@ async function runWakeUp() {
       if (content.includes("## Memories")) {
         content = content.split("## Memories")[0];
       }
+      // 批注 2026-09-30：把消息内容开头的时间戳提取到标签里，
+      // 让每条记录的时间更醒目，避免唤醒时模型把几天前的事当成昨天写进日记。
+      const ts = parseTimelineTimestamp(content);
+      if (ts) {
+        const pad = n => String(n).padStart(2, "0");
+        const label = `${ts.getFullYear()}-${pad(ts.getMonth() + 1)}-${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}`;
+        return `[${role} · ${label}] ${content}`;
+      }
       return `[${role}] ${content}`;
     })
     .join("\n\n");
