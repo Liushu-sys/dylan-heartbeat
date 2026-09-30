@@ -1,0 +1,34 @@
+#!/usr/bin/expect -f
+set timeout 120
+set ip "47.82.159.182"
+set pass "bYwku0-dantyx-qozgiq"
+set src "/Users/liushujun/Documents/heartbeat/server.js"
+
+# 上传文件
+spawn scp -o StrictHostKeyChecking=no "$src" root@$ip:/root/dylan-heartbeat/server.js
+expect "password:"
+send "$pass\r"
+expect {
+    "100%" { puts "Upload OK" }
+    "error" { puts "Upload failed"; exit 1 }
+}
+close
+
+# 等一秒再连 SSH
+sleep 1
+
+# SSH 重启
+spawn ssh -o StrictHostKeyChecking=no root@$ip
+expect "password:"
+send "$pass\r"
+expect "#"
+send "cd /root/dylan-heartbeat\r"
+expect "#"
+send "pm2 delete gateway\r"
+expect "#"
+send "pm2 start server.js --name gateway\r"
+expect "#"
+send "pm2 save\r"
+expect "#"
+send "exit\r"
+expect eof

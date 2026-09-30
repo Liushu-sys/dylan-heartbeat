@@ -1,4 +1,4 @@
-require("dotenv").config({ path: __dirname + "/.env" });
+require("dotenv").config();
 
 const Fastify = require("fastify");
 const fs = require("fs-extra");
@@ -497,16 +497,6 @@ function readRestartCommand() {
 // ========================
 app.addHook("onRequest", (req, reply, done) => {
   if (req.url.startsWith("/admin")) return done();
-  // \u4f59\u989d\u67e5\u8be2 - \u6700\u65e9\u62e6\u622a
-  if (req.url === "/v1/user/balance" && req.method === "GET") {
-    const bk = process.env.TARGET_API_KEY || "";
-    fetch("https://api.deepseek.com/v1/user/balance", {
-      headers: { Authorization: "Bearer " + bk }
-    }).then(function(resp) { return resp.json(); })
-    .then(function(data) { reply.send(data); })
-    .catch(function(e) { reply.code(500).send({ error: e.message }); });
-    return;
-  }
   // 批注 2026-07-15：公网部署常经过反代，真实公网请求可能在 Node 侧显示为 127/10 网段；
   // 所以 ALLOW_PUBLIC_API=true 后必须先验 /v1 的网关 key，避免被云平台内网 IP 绕过。
   if (readBooleanEnv("ALLOW_PUBLIC_API", false) && req.url.startsWith("/v1/")) {
@@ -525,24 +515,6 @@ app.addHook("onRequest", (req, reply, done) => {
   const ip = req.ip || req.connection.remoteAddress;
   const isTrustedNetwork = ip === "127.0.0.1" || ip === "::1" || ip === "localhost" || /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip);
   if (isTrustedNetwork) return done();
-  // \u5982\u679c\u5e26\u4e86 API Key\uff0c\u76f4\u63a5\u653e\u884c
-  const anyKey = String(req.headers.authorization || "").match(/Bearer\s+(.+)/)?.[1]?.trim() || "";
-  if (anyKey) return done();
-  // \u5904\u7406\u4f59\u989d\u67e5\u8be2 - \u5728\u8def\u7531\u4e4b\u524d\u62e6\u622a
-  if (req.url === "/v1/user/balance" && req.method === "GET") {
-    const balKey = process.env.TARGET_API_KEY || "";
-    fetch("https://api.deepseek.com/v1/user/balance", {
-      headers: { Authorization: "Bearer " + balKey }
-    }).then(function(balResp) {
-      return balResp.json();
-    }).then(function(balData) {
-      reply.send(balData);
-    }).catch(function(balErr) {
-      reply.code(500).send({ error: balErr.message });
-    });
-    return;
-  }
-
   reply.code(403).send("Forbidden");
 });
 
@@ -554,177 +526,198 @@ app.get("/v1/models", async (req, reply) => {
     object: "list",
     data: [{ id: configuredModelName(), object: "model", created: 0, owned_by: "gateway" }]
   });
-
-// ========================
-// DeepSeek \u4f59\u989d\u67e5\u8be2\uff08\u4ee3\u7406\uff09
-// ========================
-app.get("/v1/dashboard/billing/subscription", async (req, reply) => {
-  try {
-    const resp = await fetch("https://api.deepseek.com/v1/dashboard/billing/subscription", {
-      headers: { Authorization: `Bearer ${process.env.TARGET_API_KEY}` }
-    });
-    const data = await resp.json();
-    reply.send(data);
-  } catch (e) {
-    reply.code(500).send({ error: e.message });
-  }
-});
-
-app.get("/v1/dashboard/billing/usage", async (req, reply) => {
-  try {
-    const start = req.query.start || "2026-01-01";
-    const end = req.query.end || new Date().toISOString().slice(0, 10);
-    const url = `https://api.deepseek.com/v1/dashboard/billing/usage?start=${start}&end=${end}`;
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${process.env.TARGET_API_KEY}` }
-    });
-    const data = await resp.json();
-    reply.send(data);
-  } catch (e) {
-    reply.code(500).send({ error: e.message });
-  }
-});
-
-app.get("/v1/user/balance", async (req, reply) => {
-  try {
-    const resp = await fetch("https://api.deepseek.com/v1/user/balance", {
-      headers: { Authorization: `Bearer ${process.env.TARGET_API_KEY}` }
-    });
-    const data = await resp.json();
-    reply.send(data);
-  } catch (e) {
-    reply.code(500).send({ error: e.message });
-  }
-});
-
-// ========================
-// DeepSeek \u4f59\u989d\u67e5\u8be2\uff08\u4ee3\u7406\uff09
-// ========================
-app.get("/v1/dashboard/billing/subscription", async (req, reply) => {
-  try {
-    const resp = await fetch("https://api.deepseek.com/v1/dashboard/billing/subscription", {
-      headers: { Authorization: `Bearer ${process.env.TARGET_API_KEY}` }
-    });
-    const data = await resp.json();
-    reply.send(data);
-  } catch (e) {
-    reply.code(500).send({ error: e.message });
-  }
-});
-
-app.get("/v1/dashboard/billing/usage", async (req, reply) => {
-  try {
-    const start = req.query.start || "2026-01-01";
-    const end = req.query.end || new Date().toISOString().slice(0, 10);
-    const url = `https://api.deepseek.com/v1/dashboard/billing/usage?start=${start}&end=${end}`;
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${process.env.TARGET_API_KEY}` }
-    });
-    const data = await resp.json();
-    reply.send(data);
-  } catch (e) {
-    reply.code(500).send({ error: e.message });
-  }
-});
 });
 
 // ========================
 // Chat Completions
 // ========================
-async function chatHandler(req, reply) {
+app.post("/v1/chat/completions", async (req, reply) => {
   try {
     const body = req.body;
-    const messages = body.messages || [];
+    // 批注 2026-07-15：公开部署时日志不能默认写入完整上下文；
+    // 这里只保留请求摘要，避免 system prompt、记忆和聊天正文进入 pm2 日志。
+    console.log(JSON.stringify({
+      event: "kelivo_request",
+      model: body?.model || "",
+      stream: body?.stream === true,
+      messages: summarizeMessagesForLog(body?.messages || [])
+    }));
 
-    // --- 记录时间戳（用于唤醒服务）---
-    const lastUserMsg = messages.filter(m => m.role === "user").pop();
-    if (lastUserMsg) {
-      const content = lastUserMsg.content;
-      const ts = new Date().toISOString().replace('T', ' ').slice(0, 16);
-      const fs = require('fs');
-      const path = require('path');
-      const filePath = path.join(__dirname, 'enhanced_messages.json');
-      let history = [];
-      if (fs.existsSync(filePath)) {
-        try {
-          history = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        } catch (e) { history = []; }
-      }
-      if (history.length > 50) history = history.slice(-50);
-      history.push({
-        role: 'user',
-        content: `${ts} ${content}`,
-        position: history.length
-      });
-      fs.writeFileSync(filePath, JSON.stringify(history, null, 2));
-      console.log('\u2705 \u65f6\u95f4\u6233\u5df2\u5199\u5165 enhanced_messages.json');
+    const kelivoMessages = body.messages || [];
+    const oldTimeline = loadTimeline();
+
+    const tsDB = loadTimestampDB();
+    let tsDBDirty = false;
+    for (const msg of kelivoMessages) {
+      if (msg.role === "system") continue;
+      if (msg.role === "tool") continue;
+      const ts = extractTimestamp(normalizeContentToText(msg.content));
+      if (!ts) continue;
+      const fp = makeFingerprint(msg);
+      const fpStripped = makeFingerprintStripped(msg);
+      if (!tsDB[fp]) { tsDB[fp] = ts.toISOString(); tsDBDirty = true; }
+      if (!tsDB[fpStripped]) { tsDB[fpStripped] = ts.toISOString(); tsDBDirty = true; }
     }
+    if (tsDBDirty) saveTimestampDB(tsDB);
 
-    // --- 注入 Bark 事件到对话上下文 ---
-    try {
-      const enhancedPath = path.join(__dirname, "enhanced_messages.json");
-      if (fs.existsSync(enhancedPath)) {
-        const enhanced = JSON.parse(fs.readFileSync(enhancedPath, "utf-8"));
-        const events = enhanced.filter(function(e) { return e.role === "assistant" && e.content.indexOf("Bark") >= 0; });
-        if (events.length > 0) {
-          var latestEvent = events[events.length - 1];
-          messages.unshift({ role: "system", content: "最近已发送的推送：" + latestEvent.content });
-          console.log("注入 Bark 事件:", latestEvent.content.slice(0, 60));
+    const finalTimeline = buildTimeline(kelivoMessages, tsDB);
+    saveTimeline(finalTimeline);
+
+    // Kelivo 发图时 content 常是数组。默认原样透传给视觉模型；
+    // 如上游不支持图片，可设置 MULTIMODAL_MODE=text 退回文本占位。
+    const llmMessages = kelivoMessages
+      .map(prepareMessageForLLM)
+      .filter(Boolean);
+
+    const oldEvents = stripPosition(
+      oldTimeline.filter(isSpecialEvent).sort((a, b) => {
+        const timeA = extractTimestampWithMemory(a, tsDB);
+        const timeB = extractTimestampWithMemory(b, tsDB);
+        if (timeA && timeB) return timeA - timeB;
+        return 0;
+      })
+    );
+
+    console.log("本次注入的特殊事件数量:", oldEvents.length);
+
+    for (const event of oldEvents) {
+      const eventTime = extractTimestampWithMemory(event, tsDB);
+      if (!eventTime) { llmMessages.push(event); continue; }
+      let inserted = false;
+      for (let i = 0; i < llmMessages.length; i++) {
+        const msgTime = extractTimestampWithMemory(llmMessages[i], tsDB);
+        if (msgTime && msgTime >= eventTime) {
+          llmMessages.splice(i, 0, event);
+          inserted = true;
+          break;
         }
       }
-    } catch (e) {
-      console.error("读取 enhanced_messages 失败:", e.message);
+      if (!inserted) llmMessages.push(event);
     }
 
-    // --- \u8f6c\u53d1\u8bf7\u6c42\u5230 DeepSeek API ---
-    const response = await fetch(process.env.TARGET_API_URL, {
-      method: 'POST',
+
+
+    console.log(JSON.stringify({
+      event: "llm_forward_summary",
+      messages: summarizeMessagesForLog(llmMessages)
+    }));
+
+    // ---- 自动修复不完整的 tool 调用（双向清理） ----
+    // 第一遍：标记需要移除的索引
+    const removeSet = new Set();
+
+    // 检查 assistant tool_calls 是否完整
+    for (let i = 0; i < llmMessages.length; i++) {
+      const msg = llmMessages[i];
+      if (msg.role !== "assistant" || !msg.tool_calls) continue;
+      const expectedIds = msg.tool_calls.map(tc => tc.id);
+      const followingTools = [];
+      for (let j = i + 1; j < llmMessages.length; j++) {
+        const nxt = llmMessages[j];
+        if (nxt.role === "tool") {
+          followingTools.push(nxt);
+        } else {
+          break;
+        }
+      }
+      const foundIds = followingTools.map(t => t.tool_call_id);
+      const complete = expectedIds.every(id => foundIds.includes(id));
+      if (!complete) {
+        // 标记这条 assistant 为移除，同时标记它后面的所有 tool 消息也移除
+        removeSet.add(i);
+        for (let j = i + 1; j < llmMessages.length; j++) {
+          if (llmMessages[j].role === "tool") {
+            removeSet.add(j);
+          } else {
+            break;
+          }
+        }
+        console.log(`⚠️ 自动修复：移除不完整的 tool_calls (索引 ${i})`);
+      }
+    }
+
+    // 检查孤立 tool 消息（前面没有对应的 tool_calls）
+    for (let i = 0; i < llmMessages.length; i++) {
+      if (llmMessages[i].role !== "tool") continue;
+      // 向前查找最近的 assistant
+      let hasMatchingToolCalls = false;
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = llmMessages[j];
+        if (prev.role === "assistant" && prev.tool_calls) {
+          // 检查这个 tool_call_id 是否在 assistant 的 tool_calls 中
+          const ids = prev.tool_calls.map(tc => tc.id);
+          if (ids.includes(llmMessages[i].tool_call_id)) {
+            hasMatchingToolCalls = true;
+          }
+          break;
+        } else if (prev.role === "tool") {
+          continue; // 继续向前找
+        } else {
+          break; // 遇到 user 或其他消息，停止
+        }
+      }
+      if (!hasMatchingToolCalls) {
+        removeSet.add(i);
+        console.log(`⚠️ 自动修复：移除孤立的 tool 消息 (索引 ${i})`);
+      }
+    }
+
+    // 按索引从大到小删除，避免索引错乱
+    const sortedRemove = Array.from(removeSet).sort((a, b) => b - a);
+    for (const idx of sortedRemove) {
+      llmMessages.splice(idx, 1);
+    }
+
+    if (!TARGET_API_URL || !process.env.TARGET_API_KEY) {
+      return reply.code(500).send({ error: "TARGET_API_URL / TARGET_API_KEY 未配置" });
+    }
+
+    const requestedStream = body?.stream === true;
+
+    // 请求模型
+    const response = await fetch(TARGET_API_URL, {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.TARGET_API_KEY}`
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.TARGET_API_KEY}`
       },
-      body: JSON.stringify({ ...body, messages: messages })
+      body: JSON.stringify({ ...body, messages: llmMessages })
     });
 
-    // \u8bfb\u53d6\u5b8c\u6574\u54cd\u5e94\u4f53
-    const responseText = await response.text();
+    const upstreamContentType = response.headers.get("content-type") || "";
+    const shouldStreamResponse = requestedStream || upstreamContentType.includes("text/event-stream");
 
-    if (!response.ok) {
-      throw new Error(`DeepSeek \u8bf7\u6c42\u5931\u8d25\uff08HTTP ${response.status}\uff09\uff1a${responseText.slice(0, 300)}`);
+    // 批注 2026-07-11：Kelivo 关闭 stream 时需要收到普通 JSON；只在请求或上游确认为 SSE 时才按流式直通。
+    if (!shouldStreamResponse) {
+      const responseText = await response.text();
+      return reply
+        .code(response.status)
+        .header("Content-Type", upstreamContentType || "application/json")
+        .send(responseText);
     }
 
-    // \u68c0\u6d4b\u662f\u5426\u4e3a SSE \u6d41\u5f0f\u54cd\u5e94\uff08\u4e0d\u4f9d\u8d56 Content-Type \u6216 stream \u53c2\u6570\uff09
-    const isSSE = responseText.trimStart().startsWith('data:');
-
-    if (isSSE) {
-      // SSE \u6d41\u5f0f\u54cd\u5e94\uff1a\u539f\u59cb\u7ba1\u9053\u76f4\u901a
-      reply.raw.writeHead(response.status, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
-      });
-      reply.raw.write(responseText);
-      reply.raw.end();
-    } else {
-      // \u666e\u901a JSON \u54cd\u5e94
-      let data;
-      try {
-        data = JSON.parse(responseText);
-      } catch (e) {
-        throw new Error(`DeepSeek \u8fd4\u56de\u7684\u4e0d\u662f JSON\uff08HTTP ${response.status}\uff09\uff1a${responseText.slice(0, 300)}`);
-      }
-      reply.send(data);
+    if (!response.body) {
+      return reply.code(response.status).send({ error: "上游 API 没有返回可读取的响应体" });
     }
-  } catch (error) {
-    console.error('\u7f51\u5173\u5904\u7406\u8bf7\u6c42\u5931\u8d25:', error.message);
-    reply.code(500).send({ error: error.message });
+
+    reply.raw.writeHead(response.status, {
+      "Content-Type": upstreamContentType || "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive"
+    });
+
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      reply.raw.write(value);
+    }
+    reply.raw.end();
+  } catch (err) {
+    console.error(err);
+    reply.code(500).send({ error: err.message });
   }
-}
-;
-
-app.post("/v1/chat/completions", chatHandler);
-app.post("/chat/completions", chatHandler);
-
+});
 
 // ========================
 // 内部接口：记录唤醒事件
@@ -1717,18 +1710,6 @@ app.get("/test-bark", async (req, reply) => {
   const formattedTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
   appendSpecialEvent(`（${formattedTime} 刚刚给用户发了 Bark：这是一条测试推送。）`);
   reply.send({ success: true });
-});
-
-// ========================
-// Bark \u56fe\u6807
-// ========================
-app.get("/avatar.jpg", async (req, reply) => {
-  const imgPath = path.join(__dirname, "avatar.jpg");
-  if (!fs.existsSync(imgPath)) {
-    reply.code(404).send("not found");
-    return;
-  }
-  reply.type("image/jpeg").send(fs.readFileSync(imgPath));
 });
 
 // ========================
